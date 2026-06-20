@@ -236,4 +236,28 @@ def train(cfg=None):
 
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    from config import Config
+
+    parser = argparse.ArgumentParser(description="Train CET-Net")
+    
+    # We can automatically add all basic types from Config to argparse
+    default_cfg = Config()
+    for key in dir(default_cfg):
+        if not key.startswith("__") and not callable(getattr(default_cfg, key)):
+            val = getattr(default_cfg, key)
+            if type(val) in (int, float, str, bool):
+                # For booleans, argparse needs special handling, but we'll stick to simple types
+                if type(val) is bool:
+                    parser.add_argument(f"--{key}", type=lambda x: (str(x).lower() == 'true'), default=val)
+                else:
+                    parser.add_argument(f"--{key}", type=type(val), default=val)
+
+    args = parser.parse_args()
+
+    # Apply parsed args to a new Config instance
+    cfg = Config()
+    for key, val in vars(args).items():
+        setattr(cfg, key, val)
+
+    train(cfg)
