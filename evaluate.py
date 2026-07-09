@@ -29,8 +29,9 @@ def evaluate_model(model, dataloader, device, num_aus, au_names):
         for i, batch in enumerate(dataloader):
             images = batch["image"].to(device)
             au_labels = batch["au_labels"]  # [B, num_aus]
+            landmarks = batch["landmarks"].to(device)
 
-            output = model(images)
+            output = model(images, landmarks=landmarks)
             au_preds = output["au_preds"].cpu()  # [B, num_aus]
 
             # Binarize predictions at 0.5 threshold

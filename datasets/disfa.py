@@ -24,6 +24,7 @@ Labels are 1-indexed (frame 1,2,...), images are 0-indexed (0.png, 1.png,...).
 
 import os
 import torch
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
@@ -160,8 +161,29 @@ class DISFADataset(Dataset):
     def __getitem__(self, idx):
         img_path, au_label = self.samples[idx]
         image = Image.open(img_path).convert("RGB")
-        image = self.transform(image)
-        return {"image": image, "au_labels": au_label}
+        image_tensor = self.transform(image)
+        
+        # Reverse normalization for MediaPipe
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        img_unnorm = image_tensor * std + mean
+        img_np = (img_unnorm.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+
+        # Lazy init MediaPipe FaceMesh (once per worker)
+        if not hasattr(self, 'face_mesh'):
+            import mediapipe as mp
+            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True, max_num_faces=1, refine_landmarks=True
+            )
+
+        results = self.face_mesh.process(img_np)
+        if results.multi_face_landmarks:
+            face = results.multi_face_landmarks[0]
+            landmarks = np.array([(lm.x, lm.y, lm.z) for lm in face.landmark], dtype=np.float32)
+        else:
+            landmarks = np.zeros((478, 3), dtype=np.float32) # Fallback if no face detected
+
+        return {"image": image_tensor, "au_labels": au_label, "landmarks": torch.from_numpy(landmarks)}
 
 
 def get_disfa_loaders(root_dir, train_subjects, val_subjects,

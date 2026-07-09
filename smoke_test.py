@@ -175,7 +175,8 @@ def test_full_model():
         model = MuscleAUNet(backbone_name="vit_b_16").to(device)
 
     x = torch.randn(2, 3, 224, 224, device=device)
-    output = model(x)
+    landmarks = torch.rand(2, 468, 3, device=device)
+    output = model(x, landmarks=landmarks)
 
     print(f"  au_preds: {output['au_preds'].shape}")
     print(f"  muscle_activations: {output['muscle_activations'].shape}")

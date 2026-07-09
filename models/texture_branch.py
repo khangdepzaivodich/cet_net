@@ -203,8 +203,7 @@ class TextureBranch(nn.Module):
         device = images.device
 
         if landmarks is None:
-            # Fallback: use fixed grid ROIs (no landmark data)
-            landmarks = torch.rand(B, 468, 3, device=device)
+            raise ValueError("landmarks must be provided to TextureBranch.")
 
         # Extract ROI crops
         roi_crops = self._extract_rois(images, landmarks)  # [B, 7, 3, 64, 64]

@@ -74,10 +74,11 @@ def train_one_epoch(model, dataloader, losses, optimizer, device, cfg, epoch):
     for i, batch in enumerate(dataloader):
         images = batch["image"].to(device)
         au_labels = batch["au_labels"].to(device)
+        landmarks = batch["landmarks"].to(device)
 
         optimizer.zero_grad()
 
-        output = model(images)
+        output = model(images, landmarks=landmarks)
 
         # Compute losses
         l_au = au_loss_fn(output["au_preds"], au_labels)
@@ -132,8 +133,9 @@ def evaluate(model, dataloader, losses, device, cfg):
     for batch in dataloader:
         images = batch["image"].to(device)
         au_labels = batch["au_labels"].to(device)
+        landmarks = batch["landmarks"].to(device)
 
-        output = model(images)
+        output = model(images, landmarks=landmarks)
 
         l_au = au_loss_fn(output["au_preds"], au_labels)
         running["au"] += l_au.item()

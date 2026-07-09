@@ -28,12 +28,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-try:
-    import mediapipe as mp
-    HAS_MEDIAPIPE = True
-except ImportError:
-    HAS_MEDIAPIPE = False
-    print("WARNING: mediapipe not installed. Geometry branch will use dummy landmarks.")
 
 
 # Key landmark indices for computing geometric predicates
@@ -69,61 +63,6 @@ LM = {
     "right_ear": 454,
     "forehead": 10,
 }
-
-
-class LandmarkExtractor:
-    """
-    Extracts MediaPipe Face Mesh landmarks from images.
-    Runs on CPU. Not differentiable.
-    """
-
-    def __init__(self):
-        if HAS_MEDIAPIPE:
-            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=True,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.5,
-            )
-        else:
-            self.face_mesh = None
-
-    def extract(self, image_np):
-        """
-        Extract landmarks from a single image.
-
-        Args:
-            image_np: numpy array [H, W, 3] uint8 RGB
-
-        Returns:
-            landmarks: [468, 3] numpy array of (x, y, z) normalized to [0,1]
-                       or None if no face detected
-        """
-        if self.face_mesh is None:
-            return None
-
-        results = self.face_mesh.process(image_np)
-        if results.multi_face_landmarks is None:
-            return None
-
-        face = results.multi_face_landmarks[0]
-        landmarks = np.array(
-            [(lm.x, lm.y, lm.z) for lm in face.landmark],
-            dtype=np.float32,
-        )
-        return landmarks
-
-    def extract_batch(self, images_np):
-        """
-        Extract landmarks from a batch of images.
-
-        Args:
-            images_np: list of numpy arrays [H, W, 3] uint8
-
-        Returns:
-            list of landmark arrays (None for failed detections)
-        """
-        return [self.extract(img) for img in images_np]
 
 
 class GeometryPredicateComputer(nn.Module):
@@ -175,7 +114,6 @@ class GeometryBranch(nn.Module):
     def __init__(self, num_predicates=8, embed_dim=256):
         super().__init__()
         self.num_predicates = num_predicates
-        self.landmark_extractor = LandmarkExtractor()
 
         # Predicate computer (differentiable)
         self.predicate_computer = GeometryPredicateComputer(num_predicates)
@@ -277,10 +215,7 @@ class GeometryBranch(nn.Module):
             geometry_predicates: [B, 8] truth values in [0, 1]
         """
         if landmarks is None:
-            # Fallback: generate random landmarks for shape compatibility
-            B = images.shape[0]
-            device = images.device
-            landmarks = torch.rand(B, 468, 3, device=device)
+            raise ValueError("landmarks must be provided to GeometryBranch.")
 
         # Compute raw distance features
         raw_features = self._compute_raw_features(landmarks)  # [B, 8, 2]
