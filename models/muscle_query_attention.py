@@ -61,9 +61,8 @@ class CrossAttentionBlock(nn.Module):
         if logic_bias is not None:
             attn_out, attn_weights = self.attn(
                 queries, kv_pool, kv_pool,
-                attn_mask=None,
+                attn_mask=logic_bias,
             )
-            # We'll apply logic bias as a post-hoc mechanism in the full model
         else:
             attn_out, attn_weights = self.attn(queries, kv_pool, kv_pool)
 
@@ -130,16 +129,19 @@ class MuscleQueryAttention(nn.Module):
 
         # Cross-attend to each modality
         q_vit = queries
+        vit_bias = logic_bias["vit"] if logic_bias is not None else None
         for layer in self.vit_attn_layers:
-            q_vit, _ = layer(q_vit, vit_pool)
+            q_vit, _ = layer(q_vit, vit_pool, logic_bias=vit_bias)
 
         q_geo = queries
+        geo_bias = logic_bias["geo"] if logic_bias is not None else None
         for layer in self.geo_attn_layers:
-            q_geo, _ = layer(q_geo, geo_pool)
+            q_geo, _ = layer(q_geo, geo_pool, logic_bias=geo_bias)
 
         q_tex = queries
+        tex_bias = logic_bias["tex"] if logic_bias is not None else None
         for layer in self.tex_attn_layers:
-            q_tex, _ = layer(q_tex, tex_pool)
+            q_tex, _ = layer(q_tex, tex_pool, logic_bias=tex_bias)
 
         # Gated fusion
         concat = torch.cat([q_vit, q_geo, q_tex], dim=-1)  # [B, 18, 3D]

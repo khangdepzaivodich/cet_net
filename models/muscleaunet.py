@@ -36,6 +36,7 @@ from reasoning.predicates import PredicateStore
 from reasoning.rules import SymbolicRuleEngine
 from reasoning.counterfactual import CounterfactualEngine
 from knowledge.muscle_anatomy import get_muscle_adjacency, NUM_MUSCLES
+from models.logic_attention import LogicAttentionBias
 
 
 class MuscleAUNet(nn.Module):
@@ -121,6 +122,17 @@ class MuscleAUNet(nn.Module):
         self.rule_engine = SymbolicRuleEngine(num_aus=num_aus, au_list=au_list)
         self.counterfactual_engine = CounterfactualEngine(num_muscles=num_muscles)
 
+        # Logic-Guided Attention Feedback
+        # 17 is the total number of logical rules in SymbolicRuleEngine
+        self.logic_attention_bias = LogicAttentionBias(
+            num_rules=17, 
+            num_muscles=num_muscles,
+            num_vit_patches=256 if backbone_name == "dinov2_vitb14" else 196,
+            num_geo=num_geometry_predicates,
+            num_tex=7, # 7 texture ROIs
+            num_heads=cross_attn_heads
+        )
+
         # Register muscle adjacency as buffer
         adj = get_muscle_adjacency(num_muscles)
         self.register_buffer("muscle_adjacency", adj)
@@ -162,13 +174,30 @@ class MuscleAUNet(nn.Module):
             patch_tokens, geo_predicates, roi_features
         )  # [B, N, D], [B, 8, D], [B, 7, D]
 
-        # Stage 5: Muscle Query Cross-Attention
-        muscle_embeddings, gate_info = self.muscle_query_attn(
-            vit_pool, geo_pool, tex_pool
+        # ====================================================
+        # PASS 1: Initial (Unbiased) Forward Pass
+        # ====================================================
+        muscle_embeddings_init, gate_info_init = self.muscle_query_attn(
+            vit_pool, geo_pool, tex_pool, logic_bias=None
         )  # [B, 18, D]
+        muscle_act_init = self.muscle_activation(muscle_embeddings_init)  # [B, 18]
 
-        # Stage 6: Initial Muscle Activations
-        muscle_act_init = self.muscle_activation(muscle_embeddings)  # [B, 18]
+        # Evaluate rules to get initial logic satisfaction scores
+        preds_init = PredicateStore(geo_predicates, tex_predicates, muscle_act_init)
+        _, rule_sats_init, _ = self.rule_engine(preds_init, muscle_act_init)
+        
+        # Stack scores into a single tensor [B, num_rules]
+        rule_scores = torch.stack([score for name, score in rule_sats_init], dim=1)
+        
+        # Generate attention biases from logic rules
+        logic_bias = self.logic_attention_bias(rule_scores)
+
+        # ====================================================
+        # PASS 2: Logic-Biased Forward Pass (Feedback Loop)
+        # ====================================================
+        muscle_embeddings, gate_info = self.muscle_query_attn(
+            vit_pool, geo_pool, tex_pool, logic_bias=logic_bias
+        )  # [B, 18, D]
 
         # Stage 7: Muscle Graph Transformer (refine embeddings)
         refined_embeddings = self.muscle_graph(
