@@ -1,47 +1,53 @@
 """
-CET-Net Training Script
+MuscleAU-Net Training Script
 
-Standard PyTorch training loop with:
-- Adam optimizer with differential learning rates (backbone vs rest)
-- Cosine annealing LR scheduler
-- All 4 loss components logged per epoch
-- Best model checkpoint saved by validation expression accuracy
-- Supports BP4D and DISFA datasets (set cfg.dataset to 'bp4d' or 'disfa')
+Full training loop with:
+- All 5 loss components (AU, logic, counterfactual, graph, attention)
+- Adam optimizer with differential LR (backbone vs rest)
+- Cosine annealing scheduler
+- Per-batch progress reporting
 """
 
 import os
 import sys
 import time
+import argparse
 
 import torch
-import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import Config
-from models.cet_net import CETNet
-from losses import CETNetLoss
+from models.muscleaunet import MuscleAUNet
+from losses.au_loss import AULoss
+from losses.logic_loss import LogicLoss
+from losses.graph_loss import GraphLoss
+from losses.counterfactual_loss import CounterfactualLoss
+from losses.attention_loss import AttentionLoss
 
 
 def create_model(cfg, device):
-    """Create and return the CET-Net model."""
-    model = CETNet(
-        num_aus=cfg.num_aus,
-        num_expressions=cfg.num_expressions,
-        backbone_feat_dim=cfg.backbone_feat_dim,
+    model = MuscleAUNet(
+        backbone_name=cfg.backbone,
+        backbone_dim=cfg.backbone_dim,
         hidden_dim=cfg.hidden_dim,
-        spatial_size=cfg.spatial_size,
-        gnn_layers=cfg.gnn_layers,
-        pretrained_backbone=True,
+        texture_dim=cfg.texture_dim,
+        num_muscles=cfg.num_muscles,
+        num_aus=cfg.num_aus,
+        au_list=cfg.au_indices,
+        num_geometry_predicates=cfg.num_geometry_predicates,
+        num_texture_predicates=cfg.num_texture_predicates,
+        gat_heads=cfg.gat_heads,
+        gat_layers=cfg.gat_layers,
+        cross_attn_heads=cfg.cross_attn_heads,
+        cross_attn_layers=cfg.cross_attn_layers,
     )
     return model.to(device)
 
 
 def create_optimizer(model, cfg):
-    """Create Adam optimizer with differential learning rates."""
     param_groups = [
         {
             "params": model.get_backbone_params(),
@@ -57,85 +63,96 @@ def create_optimizer(model, cfg):
     return Adam(param_groups, weight_decay=cfg.weight_decay)
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
-    """Train for one epoch. Returns average losses."""
+def train_one_epoch(model, dataloader, losses, optimizer, device, cfg, epoch):
     model.train()
-    running_losses = {"total": 0, "au": 0, "expr": 0, "rule": 0, "cf": 0}
+    running = {"total": 0, "au": 0, "logic": 0, "cf": 0, "graph": 0}
     num_batches = 0
     total_batches = len(dataloader)
 
+    au_loss_fn, logic_loss_fn, cf_loss_fn, graph_loss_fn, attn_loss_fn = losses
+
     for i, batch in enumerate(dataloader):
-        images = batch["image"].to(device)        # [B, 3, 224, 224]
-        au_labels = batch["au_labels"].to(device)  # [B, K]
-        expr_labels = batch["expr_label"].to(device)  # [B]
+        images = batch["image"].to(device)
+        au_labels = batch["au_labels"].to(device)
 
         optimizer.zero_grad()
 
-        # Forward pass
         output = model(images)
 
-        # Compute loss
-        loss, loss_dict = criterion(
-            output, au_labels, expr_labels, model.expression_head
+        # Compute losses
+        l_au = au_loss_fn(output["au_preds"], au_labels)
+        l_logic = logic_loss_fn(output["rule_satisfactions"])
+        l_cf = cf_loss_fn(output["cf_loss"])
+        l_graph = graph_loss_fn(output["compatibility_penalties"])
+        l_attn = attn_loss_fn(output["gate_info"])
+
+        total = (
+            cfg.lambda_au * l_au
+            + cfg.lambda_logic * l_logic
+            + cfg.lambda_counterfactual * l_cf
+            + cfg.lambda_graph * l_graph
+            + cfg.lambda_attention * l_attn
         )
 
-        # Backward pass
-        loss.backward()
+        total.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        # Accumulate
-        for key in running_losses:
-            running_losses[key] += loss_dict[key]
+        running["total"] += total.item()
+        running["au"] += l_au.item()
+        running["logic"] += l_logic.item()
+        running["cf"] += l_cf.item()
+        running["graph"] += l_graph.item()
         num_batches += 1
 
-        # Print progress every 10 batches
         if (i + 1) % 10 == 0 or (i + 1) == total_batches:
-            print(f"  Epoch {epoch+1} | Batch {i+1}/{total_batches} | Loss: {loss.item():.4f}", flush=True)
+            print(
+                f"  Epoch {epoch+1} | Batch {i+1}/{total_batches} | "
+                f"Loss: {total.item():.4f} (AU:{l_au.item():.3f} "
+                f"Logic:{l_logic.item():.3f} CF:{l_cf.item():.3f} "
+                f"Graph:{l_graph.item():.3f})",
+                flush=True,
+            )
 
-    # Average
-    for key in running_losses:
-        running_losses[key] /= max(num_batches, 1)
-
-    return running_losses
+    for key in running:
+        running[key] /= max(num_batches, 1)
+    return running
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, criterion, device):
-    """Evaluate on validation set. Returns average losses and accuracy."""
+def evaluate(model, dataloader, losses, device, cfg):
     model.eval()
-    running_losses = {"total": 0, "au": 0, "expr": 0, "rule": 0, "cf": 0}
-    correct = 0
-    total = 0
+    running = {"total": 0, "au": 0, "logic": 0}
+    correct_aus = 0
+    total_aus = 0
     num_batches = 0
+
+    au_loss_fn = losses[0]
 
     for batch in dataloader:
         images = batch["image"].to(device)
         au_labels = batch["au_labels"].to(device)
-        expr_labels = batch["expr_label"].to(device)
 
         output = model(images)
-        loss, loss_dict = criterion(
-            output, au_labels, expr_labels, model.expression_head
-        )
 
-        # Expression accuracy
-        preds = output["expr_probs"].argmax(dim=-1)
-        correct += (preds == expr_labels).sum().item()
-        total += expr_labels.size(0)
+        l_au = au_loss_fn(output["au_preds"], au_labels)
+        running["au"] += l_au.item()
+        running["total"] += l_au.item()
 
-        for key in running_losses:
-            running_losses[key] += loss_dict[key]
+        # AU accuracy (threshold at 0.5)
+        au_binary = (output["au_preds"] > 0.5).float()
+        correct_aus += (au_binary == au_labels).sum().item()
+        total_aus += au_labels.numel()
         num_batches += 1
 
-    for key in running_losses:
-        running_losses[key] /= max(num_batches, 1)
+    for key in running:
+        running[key] /= max(num_batches, 1)
 
-    accuracy = correct / max(total, 1)
-    return running_losses, accuracy
+    accuracy = correct_aus / max(total_aus, 1)
+    return running, accuracy
 
 
 def train(cfg=None):
-    """Main training function."""
     if cfg is None:
         cfg = Config()
 
@@ -149,33 +166,23 @@ def train(cfg=None):
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
 
-    # Create optimizer and scheduler
+    # Optimizer and scheduler
     optimizer = create_optimizer(model, cfg)
     scheduler = CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=1e-6)
 
-    # Create loss function
-    criterion = CETNetLoss(
-        lambda_au=cfg.lambda_au,
-        lambda_expr=cfg.lambda_expr,
-        lambda_rule=cfg.lambda_rule,
-        lambda_cf=cfg.lambda_cf,
-        num_aus=cfg.num_aus,
+    # Loss functions
+    losses = (
+        AULoss(),
+        LogicLoss(),
+        CounterfactualLoss(),
+        GraphLoss(),
+        AttentionLoss(),
     )
 
-    # Create dataloaders based on config
-    if cfg.dataset == "bp4d":
-        from datasets.bp4d import get_bp4d_loaders
-        print(f"\nLoading BP4D dataset from: {cfg.bp4d_root}")
-        train_loader, val_loader = get_bp4d_loaders(
-            root_dir=cfg.bp4d_root,
-            train_subjects=cfg.bp4d_train_subjects,
-            val_subjects=cfg.bp4d_val_subjects,
-            batch_size=cfg.batch_size,
-            num_workers=cfg.num_workers,
-        )
-    elif cfg.dataset == "disfa":
+    # Dataloaders
+    if cfg.dataset == "disfa":
         from datasets.disfa import get_disfa_loaders
-        print(f"\nLoading DISFA dataset from: {cfg.disfa_root}")
+        print(f"\nLoading DISFA from: {cfg.disfa_root}")
         train_loader, val_loader = get_disfa_loaders(
             root_dir=cfg.disfa_root,
             train_subjects=cfg.disfa_train_subjects,
@@ -185,7 +192,7 @@ def train(cfg=None):
             intensity_threshold=cfg.disfa_intensity_threshold,
         )
     else:
-        raise ValueError(f"Unknown dataset: {cfg.dataset}. Use 'bp4d' or 'disfa'.")
+        raise ValueError(f"Unknown dataset: {cfg.dataset}")
 
     # Training loop
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
@@ -194,30 +201,20 @@ def train(cfg=None):
     for epoch in range(cfg.epochs):
         start = time.time()
 
-        # Train
         train_losses = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+            model, train_loader, losses, optimizer, device, cfg, epoch
         )
-
-        # Validate
-        val_losses, val_acc = evaluate(model, val_loader, criterion, device)
-
-        # Step scheduler
+        val_losses, val_acc = evaluate(model, val_loader, losses, device, cfg)
         scheduler.step()
 
         elapsed = time.time() - start
-
-        # Print progress
         print(
             f"Epoch {epoch+1}/{cfg.epochs} ({elapsed:.1f}s) | "
-            f"Train Loss: {train_losses['total']:.4f} "
-            f"(AU:{train_losses['au']:.3f} Expr:{train_losses['expr']:.3f} "
-            f"Rule:{train_losses['rule']:.3f} CF:{train_losses['cf']:.3f}) | "
-            f"Val Loss: {val_losses['total']:.4f} | "
+            f"Train: {train_losses['total']:.4f} | "
+            f"Val AU Loss: {val_losses['au']:.4f} | "
             f"Val Acc: {val_acc:.4f}"
         )
 
-        # Save best model
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(
@@ -226,7 +223,6 @@ def train(cfg=None):
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_acc": val_acc,
-                    "val_loss": val_losses["total"],
                 },
                 os.path.join(cfg.checkpoint_dir, "best_model.pth"),
             )
@@ -236,26 +232,15 @@ def train(cfg=None):
 
 
 if __name__ == "__main__":
-    import argparse
-    from config import Config
-
-    parser = argparse.ArgumentParser(description="Train CET-Net")
-    
-    # We can automatically add all basic types from Config to argparse
+    parser = argparse.ArgumentParser(description="Train MuscleAU-Net")
     default_cfg = Config()
     for key in dir(default_cfg):
         if not key.startswith("__") and not callable(getattr(default_cfg, key)):
             val = getattr(default_cfg, key)
-            if type(val) in (int, float, str, bool):
-                # For booleans, argparse needs special handling, but we'll stick to simple types
-                if type(val) is bool:
-                    parser.add_argument(f"--{key}", type=lambda x: (str(x).lower() == 'true'), default=val)
-                else:
-                    parser.add_argument(f"--{key}", type=type(val), default=val)
+            if type(val) in (int, float, str):
+                parser.add_argument(f"--{key}", type=type(val), default=val)
 
     args = parser.parse_args()
-
-    # Apply parsed args to a new Config instance
     cfg = Config()
     for key, val in vars(args).items():
         setattr(cfg, key, val)

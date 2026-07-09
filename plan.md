@@ -1,324 +1,838 @@
-Novel framework: Causal Evidence Transport Network (CET-Net)
-1. First principles
+# Research Proposal Prompt
 
-A face image contains three things:
+You are an expert researcher in computer vision, neuro-symbolic AI, graph neural networks, differentiable logic, and facial Action Unit (AU) recognition.
 
-Localized evidence: tiny muscle movements.
-Latent causes: AUs.
-Composed outcomes: expressions.
+Your task is to design and implement a **complete research framework** for Action Unit Recognition that is sufficiently novel for a top-tier conference (CVPR / ICCV / ECCV / NeurIPS).
 
-So the model should not directly classify expressions from pixels, and it should not treat rules as fixed post-processing. It should infer a latent AU state, then let expressions emerge as a consequence of that state.
+The target datasets are:
 
-That gives one clean principle:
+* BP4D
+* DISFA
 
-Image → evidence → AU beliefs → expression beliefs
+The implementation should be in PyTorch and designed as a modular research codebase.
 
-Knowledge is not a separate module. It is a prior over how evidence is allowed to flow.
+---
 
-2. Core idea
+# Objective
 
-Represent the face as a field of AU evidence, then run belief transport through a factor graph.
+Current AU recognition methods (including SymGraphAU) mainly learn
 
-Instead of:
+Image → Feature → AU
 
-local graph + global attention + symbolic graph + ZSL head
+or
 
-use:
+Image → Graph → AU.
 
-evidence extraction
-uncertainty-calibrated AU inference
-causal AU–expression factor passing
-composition-based unseen class synthesis
+The proposed framework should instead learn
 
-This is more novel because the model is built around belief propagation under uncertainty, not around a stack of attention blocks.
+Image → Visual Evidence → Latent Muscle Representation → Neuro-Symbolic Reasoning → AU
 
-3. Architecture
-3.1 AU evidence field
+The core hypothesis is:
 
-The backbone produces a dense feature map F∈R
-H×W×C
-.
+Facial muscles are the hidden causal variables that generate
 
-For each AU k, the model predicts:
+* landmark movement
+* wrinkle formation
+* local texture
+* global appearance
 
-an evidence score e
-k
-	​
+Therefore the symbolic reasoning should operate over **latent muscle activations**, not directly over AU labels.
 
-an uncertainty score u
-k
-	​
+The framework must NOT simply add a logic loss on AU predictions.
 
-a soft spatial mask m
-k
-	​
+Instead, logic should operate throughout the perception pipeline.
 
+---
 
-So each AU is not just a node embedding. It is a belief variable with confidence.
+# Overall Architecture
 
-z
-k
-	​
+Design the following architecture.
 
-=σ(g
-k
-	​
+RGB Image
 
-(F))
+↓
 
-where z
-k
-	​
+Global Appearance Encoder (Vision Transformer)
 
- is the soft AU belief.
+↓
 
-3.2 Causal AU factor graph
+Global Tokens
 
-The AU layer is a factor graph with three factor types:
+*
 
-local evidence factors: how strongly the image supports AU k
-interaction factors: how AUs reinforce or suppress each other
-structural factors: known FACS logic and co-activation tendencies
+Geometry Branch
 
-The key difference from a normal graph network is this:
+↓
 
-edges are not just learned similarity; they are interpreted as belief constraints
+Landmarks
 
-So the update is not only message passing, but belief transport:
+↓
 
-z
-k
-t+1
-	​
+Geometric Features
 
-=Update(z
-k
-t
-	​
+*
 
-,{z
-j
-t
-	​
+Local Texture Branch
 
-}
-j
-
-=k
-	​
+↓
 
-,F,Ω)
+ROI Features
 
-where Ω is the rule set.
+↓
 
-3.3 Expression as a higher-order consequence
+Muscle Query Cross Attention
 
-Expression is not predicted independently.
+↓
 
-It is computed from the AU belief vector z through a compositional operator:
+Muscle Embeddings
 
-p(y
-expr
-∣z)=Softmax(h(z))
+↓
 
-But h(⋅) should not be a plain MLP. It should be a composition layer that learns which AU groups define which expression, while staying grounded in AU semantics.
+Anatomical Muscle Graph Transformer
 
-This makes expressions a consequence of AU structure, not a separate label head.
+↓
 
-3.4 Uncertainty-gated rule activation
+Neuro-Symbolic Reasoning Layer
 
-This is where the framework becomes distinct.
+↓
 
-A rule should not be applied just because it exists. It should be applied only when the model is uncertain or inconsistent.
+AU Predictions
 
-For each rule r
-m
-	​
+↓
 
-, define a confidence gate:
+Losses
 
-γ
-m
-	​
+The implementation should be modular.
 
-=sigmoid(a⋅viol(r
-m
-	​
+---
 
-)+b⋅uncertainty(z))
+# Stage 1 — Global Appearance Encoder
 
-So:
+Use a Vision Transformer.
 
-if the model is already confident and consistent, the rule contributes little
-if the model is uncertain or contradicting known structure, the rule contributes more
+Candidate backbones:
 
-This is better than static symbolic regularization because the knowledge base becomes adaptive per sample.
+* ViT-B/16
+* Swin Transformer
+* EVA-02
+* DINOv2
 
-4. Zero-shot transfer mechanism
+Input:
 
-Unseen expressions should be constructed as compositions of AU atoms, not as new class embeddings learned from labels.
+256×256 RGB face.
 
-For an unseen class c
-u
-	​
+Output:
 
-, define its AU descriptor a
-c
-u
-	​
+Global tokens
 
-	​
+T_global ∈ R^(N×D)
 
-.
+The implementation should allow replacing the backbone.
 
-Then synthesize its prototype by:
+---
 
-p
-c
-u
-	​
+# Stage 2 — Geometry Branch
 
-	​
+Use MediaPipe Face Mesh or HRNet.
 
-=
-k=1
-∑
-K
-	​
+Extract facial landmarks.
 
-a
-c
-u
-	​
+Compute differentiable geometric predicates.
 
-,k
-	​
+Examples:
 
-b
-k
-	​
+* mouth corner displacement
+* eyebrow height
+* eyebrow distance
+* lip distance
+* eye openness
+* cheek displacement
+* nose width
+* chin displacement
 
-+Δ(a
-c
-u
-	​
+Do NOT use handcrafted thresholds.
 
-	​
+Instead normalize these values into continuous values between 0 and 1.
 
-)
+Output:
 
-where:
+Geometry embedding.
 
-b
-k
-	​
+---
 
- is the learned basis vector of AU k
-Δ(⋅) is a correction term for interactions among AUs
+# Stage 3 — Local Texture Branch
 
-This is the compositional heart of the ZSL part.
+Instead of using only global ViT features, extract local high-frequency facial textures.
 
-The correction term is important because expressions are not linear sums of AUs. The model needs a residual interaction term, or it will be too naive.
+Use landmarks to define ROIs.
 
-5. Novel training objective
+Example ROIs:
 
-Use four pressures on the same latent belief space:
+* left eye
+* right eye
+* forehead
+* nose
+* mouth
+* left cheek
+* right cheek
 
-L=λ
-1
-	​
+Each ROI should be processed by a lightweight CNN.
 
-L
-AU
-	​
+Output:
 
-+λ
-2
-	​
+ROI texture embeddings.
 
-L
-expr
-	​
+The CNN should specialize in learning:
 
-+λ
-3
-	​
+* crow's feet
+* forehead wrinkles
+* glabellar wrinkles
+* nasolabial folds
+* chin wrinkles
 
-L
-rule
-	​
+---
 
-+λ
-4
-	​
+# Stage 4 — Multi-modal Repository
 
-L
-cf
-	​
+Do NOT concatenate features immediately.
 
+Maintain separate feature pools.
 
-Where:
+Repository:
 
-L
-AU
-	​
+* Global ViT tokens
+* ROI texture embeddings
+* Geometry embeddings
 
-: AU supervision
-L
-expr
-	​
+These become the keys and values for cross-attention.
 
-: expression supervision
-L
-rule
-	​
+---
 
-: rule violation penalty, gated by uncertainty
-L
-cf
-	​
+# Stage 5 — Muscle Query Cross Attention
 
-: counterfactual consistency loss
-Counterfactual consistency loss
+This is the core innovation.
 
-This is the part that makes it more first-principles.
+Create one learnable query per facial muscle.
 
-If you suppress AU k, the expression belief should change in a predictable way.
+Example muscles:
 
-So the model is trained to satisfy:
+* Frontalis medialis
+* Frontalis lateralis
+* Corrugator supercilii
+* Depressor supercilii
+* Orbicularis oculi (orbital)
+* Orbicularis oculi (palpebral)
+* Levator palpebrae superioris
+* Levator labii superioris
+* Levator labii superioris alaeque nasi
+* Zygomaticus major
+* Zygomaticus minor
+* Risorius
+* Buccinator
+* Depressor anguli oris
+* Depressor labii inferioris
+* Mentalis
+* Orbicularis oris
+* Nasalis
 
-remove AU evidence
-expression belief should shift accordingly
-unrelated AUs should remain stable
+Each muscle query attends to every modality.
 
-This forces the network to learn causal dependence, not just correlation.
+Example:
 
-6. Why this is genuinely different
+Q_Zygomaticus attends to
 
-Your current draft combines:
+* mouth ViT tokens
+* cheek ViT tokens
+* mouth ROI texture
+* cheek ROI texture
+* mouth geometry
 
-dynamic AU graphs
-global attention
-symbolic clauses
-zero-shot prototypes
+Output:
 
-That is a useful system, but it still reads like a composite of existing ideas.
+One embedding per muscle.
 
-This framework is different because it is organized around one principle:
+These embeddings represent latent muscle activations.
 
-expression recognition is inference over uncertain causal AU evidence
+---
 
-Everything else follows from that.
+# Stage 6 — Muscle Activation Estimation
 
-So instead of asking:
+Each muscle embedding
 
-how do we combine three papers?
+↓
 
-ask:
+MLP
 
-how does a face generate evidence for latent AUs?
-how do AUs generate expressions?
-when should knowledge constrain inference?
-how do unseen classes arise from AU composition?
+↓
 
-That is a cleaner novel methodology.
+Probability
+
+Example
+
+Zygomaticus = 0.91
+
+Orbicularis = 0.83
+
+Frontalis = 0.11
+
+These muscle activations are latent variables.
+
+No muscle supervision exists.
+
+They must be learned jointly.
+
+---
+
+# Stage 7 — Anatomical Muscle Graph Transformer
+
+Construct a graph whose nodes are muscles.
+
+Do NOT construct an AU graph.
+
+Use anatomical adjacency.
+
+Examples:
+
+Frontalis ↔ Corrugator
+
+Corrugator ↔ Depressor Supercilii
+
+Zygomaticus Major ↔ Risorius
+
+Levator Labii Superioris ↔ LLSAN
+
+Orbicularis Oris ↔ Mentalis
+
+Orbicularis Oculi ↔ Levator Palpebrae
+
+Implement using Graph Attention Network or Graph Transformer.
+
+The graph should refine latent muscle embeddings.
+
+---
+
+# Stage 8 — Neuro-Symbolic Reasoning
+
+Implement differentiable symbolic reasoning.
+
+Use ONE formalism consistently.
+
+Preferred:
+
+Logic Tensor Networks (LTN)
+
+or
+
+Probabilistic Soft Logic (PSL)
+
+or
+
+Differentiable fuzzy logic.
+
+Do NOT use hard rules.
+
+Every predicate must produce a differentiable truth value.
+
+---
+
+# Predicates
+
+Implement three categories of predicates.
+
+## Geometry predicates
+
+Examples:
+
+CornerUp
+
+CornerDown
+
+EyeClosed
+
+BrowRaised
+
+UpperLipRaised
+
+LipSeparated
+
+CheekRaised
+
+These are computed from normalized landmark geometry.
+
+---
+
+## Texture predicates
+
+Examples:
+
+CrowFeet
+
+ForeheadWrinkle
+
+GlabellarWrinkle
+
+NasolabialFold
+
+ChinWrinkle
+
+These are outputs of the ROI CNN.
+
+---
+
+## Muscle predicates
+
+Examples:
+
+Zygomaticus
+
+Orbicularis
+
+Corrugator
+
+Mentalis
+
+Frontalis
+
+These come from the muscle-query transformer.
+
+---
+
+# Symbolic Rule Base
+
+Implement the following differentiable rules.
+
+## Geometry → Muscle
+
+CornerUp
+
+→
+
+Zygomaticus Major
+
+EyeClosing
+
+→
+
+Orbicularis Oculi
+
+InnerBrowRaise
+
+→
+
+Frontalis Medialis
+
+OuterBrowRaise
+
+→
+
+Frontalis Lateralis
+
+BrowsTogether
+
+→
+
+Corrugator
+
+UpperLipRaise
+
+→
+
+Levator Labii Superioris
+
+NostrilRaise
+
+→
+
+LLSAN
+
+CornerDown
+
+→
+
+Depressor Anguli Oris
+
+LipStretch
+
+→
+
+Risorius
+
+ChinRaise
+
+→
+
+Mentalis
+
+---
+
+## Texture → Muscle
+
+CrowFeet
+
+→
+
+Orbicularis Oculi
+
+ForeheadWrinkle
+
+→
+
+Frontalis
+
+GlabellarWrinkle
+
+→
+
+Corrugator
+
+NasolabialFold
+
+→
+
+Zygomaticus Major
+
+NoseWrinkle
+
+→
+
+LLSAN
+
+ChinWrinkle
+
+→
+
+Mentalis
+
+---
+
+## Muscle → AU
+
+Frontalis Medialis
+
+→ AU1
+
+Frontalis Lateralis
+
+→ AU2
+
+Corrugator
+
+→ AU4
+
+Levator Palpebrae
+
+→ AU5
+
+Orbicularis Oculi
+
+→ AU6
+
+Orbicularis Palpebralis
+
+→ AU7
+
+LLSAN
+
+→ AU9
+
+Levator Labii Superioris
+
+→ AU10
+
+Zygomaticus Minor
+
+→ AU11
+
+Zygomaticus Major
+
+→ AU12
+
+Buccinator
+
+→ AU14
+
+Depressor Anguli Oris
+
+→ AU15
+
+Depressor Labii Inferioris
+
+→ AU16
+
+Mentalis
+
+→ AU17
+
+Risorius
+
+→ AU20
+
+Orbicularis Oris
+
+→ AU22–24
+
+---
+
+## Multiple Evidence → Muscle
+
+CornerUp
+
+AND
+
+NasolabialFold
+
+→
+
+Zygomaticus
+
+EyeClosing
+
+AND
+
+CrowFeet
+
+→
+
+Orbicularis
+
+BrowRaise
+
+AND
+
+ForeheadWrinkle
+
+→
+
+Frontalis
+
+UpperLipRaise
+
+AND
+
+NoseWrinkle
+
+→
+
+LLSAN
+
+ChinRaise
+
+AND
+
+ChinWrinkle
+
+→
+
+Mentalis
+
+---
+
+## Multiple Muscle → AU
+
+Corrugator
+
+AND
+
+Depressor Supercilii
+
+→ AU4
+
+LLSAN
+
+AND
+
+Levator Labii Superioris
+
+→ AU10
+
+Zygomaticus Major
+
+AND
+
+Orbicularis Oculi
+
+→ Duchenne smile
+
+Orbicularis Oris
+
+AND
+
+Mentalis
+
+→ AU18–24 family
+
+---
+
+## Muscle Compatibility Rules
+
+Implement anatomical consistency.
+
+Examples
+
+High Zygomaticus
+
+AND
+
+High DAO
+
+↓
+
+Penalty
+
+High Frontalis
+
+AND
+
+High Corrugator
+
+↓
+
+Weak compatibility
+
+High Orbicularis
+
+↓
+
+Likely CheekRaise
+
+High Mentalis
+
+↓
+
+Likely ChinWrinkle
+
+Implement these as differentiable constraints.
+
+---
+
+# Logic-Guided Attention
+
+Implement a feedback mechanism.
+
+Instead of
+
+Feature
+
+↓
+
+Logic
+
+only,
+
+logic should influence feature extraction.
+
+Modify attention
+
+Attention = Softmax(QKᵀ + LogicBias)
+
+LogicBias should be computed from the symbolic reasoning module.
+
+This allows symbolic reasoning to guide attention toward anatomically relevant regions.
+
+---
+
+# Counterfactual Learning
+
+Implement intervention.
+
+Example
+
+Original
+
+Zygomaticus = 0.95
+
+↓
+
+AU12 = True
+
+Intervene
+
+do(Zygomaticus = 0)
+
+Expected
+
+AU12 decreases.
+
+Repeat for every muscle.
+
+Compute a counterfactual consistency loss.
+
+---
+
+# Loss Function
+
+Implement
+
+L =
+
+L_AU
+
+*
+
+λ1 L_logic
+
+*
+
+λ2 L_counterfactual
+
+*
+
+λ3 L_graph
+
+*
+
+λ4 L_attention
+
+Design appropriate mathematical formulations for each loss.
+
+---
+
+# Training
+
+Support
+
+BP4D
+
+DISFA
+
+Provide:
+
+* dataloaders
+* preprocessing
+* evaluation
+* F1 score
+* per-AU metrics
+* ablation studies
+
+---
+
+# Ablation Studies
+
+Implement experiments removing:
+
+* texture branch
+* geometry branch
+* muscle graph
+* logic layer
+* logic-guided attention
+* counterfactual loss
+* muscle compatibility rules
+
+---
+
+# Deliverables
+
+Produce:
+
+1. Complete mathematical formulation for every module.
+2. Network architecture diagrams.
+3. Detailed explanation of tensor shapes through the network.
+4. Formal definitions of all predicates and symbolic rules.
+5. Exact implementation of differentiable logic.
+6. Complete PyTorch implementation.
+7. Training scripts.
+8. Evaluation scripts for BP4D and DISFA.
+9. Configuration files.
+10. Clear justification of why the proposed framework is novel compared with SymGraphAU and other state-of-the-art AU recognition methods.
+
+Do not simplify any module. Before implementing, critically evaluate the entire framework for technical correctness, novelty, computational feasibility, differentiability, and potential weaknesses. If any component is inconsistent, biologically implausible, redundant, or unlikely to survive peer review at CVPR/ICCV/NeurIPS, redesign it while preserving the central idea of anatomically grounded neuro-symbolic muscle reasoning. Explain every design decision with references to relevant literature where appropriate.

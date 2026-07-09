@@ -1,1 +1,1 @@
-"""Knowledge Package"""
+"""Knowledge base package."""
