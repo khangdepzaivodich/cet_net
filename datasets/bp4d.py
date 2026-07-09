@@ -10,7 +10,6 @@ BP4D AUs: AU1, AU2, AU4, AU6, AU7, AU10, AU12, AU14, AU15, AU17, AU23, AU24
 import os
 import torch
 import numpy as np
-import mediapipe as mp
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
@@ -167,8 +166,8 @@ class BP4DDataset(Dataset):
 
         # Lazy init MediaPipe FaceMesh (once per worker)
         if not hasattr(self, 'face_mesh'):
-            from mediapipe.python.solutions import face_mesh as mp_face_mesh
-            self.face_mesh = mp_face_mesh.FaceMesh(
+            import mediapipe as mp
+            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=True, max_num_faces=1, refine_landmarks=True
             )
 
