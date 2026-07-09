@@ -166,8 +166,8 @@ class BP4DDataset(Dataset):
 
         # Lazy init MediaPipe FaceMesh (once per worker)
         if not hasattr(self, 'face_mesh'):
-            import mediapipe as mp
-            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+            from mediapipe.solutions import face_mesh as mp_face_mesh
+            self.face_mesh = mp_face_mesh.FaceMesh(
                 static_image_mode=True, max_num_faces=1, refine_landmarks=True
             )
 
