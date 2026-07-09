@@ -26,6 +26,7 @@ from losses.logic_loss import LogicLoss
 from losses.graph_loss import GraphLoss
 from losses.counterfactual_loss import CounterfactualLoss
 from losses.attention_loss import AttentionLoss
+from losses.dynamic_weighting import DynamicLossWeighting
 
 
 def create_model(cfg, device):
@@ -69,7 +70,7 @@ def train_one_epoch(model, dataloader, losses, optimizer, device, cfg, epoch):
     num_batches = 0
     total_batches = len(dataloader)
 
-    au_loss_fn, logic_loss_fn, cf_loss_fn, graph_loss_fn, attn_loss_fn = losses
+    au_loss_fn, logic_loss_fn, cf_loss_fn, graph_loss_fn, attn_loss_fn, dynamic_weighting = losses
 
     for i, batch in enumerate(dataloader):
         images = batch["image"].to(device)
@@ -87,13 +88,7 @@ def train_one_epoch(model, dataloader, losses, optimizer, device, cfg, epoch):
         l_graph = graph_loss_fn(output["compatibility_penalties"])
         l_attn = attn_loss_fn(output["gate_info"])
 
-        total = (
-            cfg.lambda_au * l_au
-            + cfg.lambda_logic * l_logic
-            + cfg.lambda_counterfactual * l_cf
-            + cfg.lambda_graph * l_graph
-            + cfg.lambda_attention * l_attn
-        )
+        total = dynamic_weighting([l_au, l_logic, l_cf, l_graph, l_attn])
 
         total.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -107,11 +102,13 @@ def train_one_epoch(model, dataloader, losses, optimizer, device, cfg, epoch):
         num_batches += 1
 
         if (i + 1) % 10 == 0 or (i + 1) == total_batches:
+            weights = dynamic_weighting.get_current_weights()
+            w_str = f"W=[{weights[0]:.2f}, {weights[1]:.2f}, {weights[2]:.2f}, {weights[3]:.2f}, {weights[4]:.2f}]"
             print(
                 f"  Epoch {epoch+1} | Batch {i+1}/{total_batches} | "
                 f"Loss: {total.item():.4f} (AU:{l_au.item():.3f} "
                 f"Logic:{l_logic.item():.3f} CF:{l_cf.item():.3f} "
-                f"Graph:{l_graph.item():.3f})",
+                f"Graph:{l_graph.item():.3f}) | {w_str}",
                 flush=True,
             )
 
@@ -173,13 +170,22 @@ def train(cfg=None):
     scheduler = CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=1e-6)
 
     # Loss functions
+    dynamic_weighting = DynamicLossWeighting(num_losses=5).to(device)
     losses = (
         AULoss(),
         LogicLoss(),
         CounterfactualLoss(),
         GraphLoss(),
         AttentionLoss(),
+        dynamic_weighting
     )
+
+    # Add dynamic weighting params to optimizer
+    optimizer.add_param_group({
+        "params": dynamic_weighting.parameters(),
+        "lr": cfg.lr,
+        "name": "loss_weights"
+    })
 
     # Dataloaders
     if cfg.dataset == "disfa":
