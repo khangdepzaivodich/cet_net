@@ -25,6 +25,7 @@ Labels are 1-indexed (frame 1,2,...), images are 0-indexed (0.png, 1.png,...).
 import os
 import torch
 import numpy as np
+import mediapipe as mp
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
@@ -171,7 +172,6 @@ class DISFADataset(Dataset):
 
         # Lazy init MediaPipe FaceMesh (once per worker)
         if not hasattr(self, 'face_mesh'):
-            import mediapipe as mp
             self.face_mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=True, max_num_faces=1, refine_landmarks=True
             )
