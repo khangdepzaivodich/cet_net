@@ -58,6 +58,19 @@ class DISFADataset(Dataset):
         ])
 
     def _load_samples(self, subjects):
+        import pickle
+        import hashlib
+        
+        cache_name = "all" if subjects is None else "_".join(sorted(subjects))
+        cache_hash = hashlib.md5(cache_name.encode()).hexdigest()
+        cache_path = os.path.join(self.root_dir, f"disfa_cache_{cache_hash}.pkl")
+        
+        if os.path.exists(cache_path):
+            print(f"DISFA: Loading cached samples from {cache_path} ...")
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
+            print(f"DISFA: Loaded {len(self.samples)} samples (from cache)")
+            return
         # Find images directory
         for img_folder in ["img", "Images", "images"]:
             images_dir = os.path.join(self.root_dir, img_folder)
@@ -108,6 +121,13 @@ class DISFADataset(Dataset):
                     self.samples.append((img_path, au_label))
 
         print(f"DISFA: Loaded {len(self.samples)} samples from {len(subjects)} subjects")
+        
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(self.samples, f)
+            print(f"DISFA: Saved cache to {cache_path}")
+        except Exception as e:
+            print(f"DISFA: Failed to save cache: {e}")
 
     def _load_subject_labels(self, subject, label_dir):
         frame_aus = {}
@@ -172,7 +192,8 @@ class DISFADataset(Dataset):
 
         # Lazy init MediaPipe FaceMesh (once per worker)
         if not hasattr(self, 'face_mesh'):
-            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+            from mediapipe.python.solutions import face_mesh as mp_face_mesh
+            self.face_mesh = mp_face_mesh.FaceMesh(
                 static_image_mode=True, max_num_faces=1, refine_landmarks=True
             )
 

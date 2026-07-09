@@ -41,6 +41,19 @@ class BP4DDataset(Dataset):
         ])
 
     def _load_samples(self, subjects):
+        import pickle
+        import hashlib
+
+        cache_name = "all" if subjects is None else "_".join(sorted(subjects))
+        cache_hash = hashlib.md5(cache_name.encode()).hexdigest()
+        cache_path = os.path.join(self.root_dir, f"bp4d_cache_{cache_hash}.pkl")
+
+        if os.path.exists(cache_path):
+            print(f"BP4D: Loading cached samples from {cache_path} ...")
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
+            print(f"BP4D: Loaded {len(self.samples)} samples (from cache)")
+            return
         images_dir = os.path.join(self.root_dir, "images")
         labels_dir = os.path.join(self.root_dir, "AU_labels")
 
@@ -88,6 +101,13 @@ class BP4DDataset(Dataset):
                         self.samples.append((img_path, frame_labels[frame_id]))
 
         print(f"BP4D: Loaded {len(self.samples)} samples from {len(subjects)} subjects")
+
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(self.samples, f)
+            print(f"BP4D: Saved cache to {cache_path}")
+        except Exception as e:
+            print(f"BP4D: Failed to save cache: {e}")
 
     def _parse_label_file(self, filepath):
         frame_labels = {}
@@ -147,7 +167,8 @@ class BP4DDataset(Dataset):
 
         # Lazy init MediaPipe FaceMesh (once per worker)
         if not hasattr(self, 'face_mesh'):
-            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+            from mediapipe.python.solutions import face_mesh as mp_face_mesh
+            self.face_mesh = mp_face_mesh.FaceMesh(
                 static_image_mode=True, max_num_faces=1, refine_landmarks=True
             )
 
